@@ -238,16 +238,18 @@ def run_experiment_for_k(model, tokenizer, data_split, k, output_dir, greedy=Fal
 def main():
     """Main execution function."""
     # Configuration
-    model_name = 'meta-llama/Llama-3.1-8B-Instruct'
+    # model_name = 'meta-llama/Llama-3.1-8B-Instruct'
+    model_name = 'Qwen/Qwen2.5-7B-Instruct'
     num_chars = 600
     k_values = range(30, 130, 10)  # 30, 40, 50, ..., 120
     greedy = True
     
-    # Create output directory structure
+    # Create output directory structure based on model name
+    model_folder = model_name.replace('/', '-')  # Sanitize model name for filesystem
     if greedy:
-        output_base = Path("outputs_greedy")
+        output_base = Path(model_folder) / "outputs_greedy"
     else:
-        output_base = Path("outputs")
+        output_base = Path(model_folder) / "outputs"
     output_base.mkdir(exist_ok=True, parents=True)
     
     print("=" * 80)
