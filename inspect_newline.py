@@ -2,9 +2,7 @@ import os
 
 import dotenv
 import torch
-import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import statistics
 
 
 with open("data/story.txt", "r", encoding="utf-8") as f:
@@ -56,8 +54,8 @@ def make_splits(data, num_chars=600):
     return result
 
 
-def add_newlines(text, k=40):
-    """Add newlines to text to keep lines under k characters."""
+def add_newlines(text, k=40, insert="\n"):
+    """Add insert symbol to text to keep lines under k characters."""
     result = []
     current_line = ""
     words = text.split()
@@ -83,8 +81,8 @@ def add_newlines(text, k=40):
     if current_line:
         result.append(current_line)
 
-    indv_lines = [line + '\n' for line in result[:-1]] + [result[-1]]
-    return '\n'.join(result), indv_lines
+    indv_lines = [line + insert for line in result[:-1]] + [result[-1]]
+    return insert.join(result), indv_lines
 
 
 def load_model_and_tokenizer(model_name):
@@ -92,13 +90,13 @@ def load_model_and_tokenizer(model_name):
     print(f"Loading model: {model_name}")
     path = '/home/kartik/all_keys/.env'
     dotenv.load_dotenv(path)
-    cache = "/mnt/SSD4/kartik/hf_cache"
+    cache = "/mnt/SSD7/kartik/cache"
 
     # Set HuggingFace cache directory globally
     os.environ['HF_HOME'] = cache
     os.environ['HUGGINGFACE_HUB_CACHE'] = cache
     os.environ['TRANSFORMERS_CACHE'] = cache
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache)
     model = AutoModelForCausalLM.from_pretrained(
@@ -120,7 +118,8 @@ def generate_chat_completion(
     temperature: float = 0.7,
     top_p: float = 0.9,
     greedy: bool = False,
-    use_chat: bool = True
+    use_chat: bool = True,
+    print_prompt: bool = True
 ) -> str:
     """Generate chat completion from messages or raw text."""
     # Format prompt based on use_chat flag
@@ -129,12 +128,13 @@ def generate_chat_completion(
         formatted_prompt = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=False,
+            add_generation_prompt=True,
         )
     else:
         # Use raw text directly (messages should be a string in this case)
         formatted_prompt = messages
-    print(formatted_prompt)
+    if print_prompt:
+        print(formatted_prompt)
 
     # Tokenize
     inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model.device)
@@ -168,7 +168,7 @@ def generate_chat_completion(
     return completion
 
 
-def create_chat_completion_prompt(tokenizer, user_question: str):
+def create_chat_completion_prompt(user_question: str):
     """Create a chat completion prompt with system and user messages."""
     combined_user_message = f"""{user_question}"""
     system_prompt = 'You must continue the story with the same style and tone as the user message.'
@@ -187,42 +187,86 @@ if __name__ == "__main__":
     model_name = 'meta-llama/Llama-3.1-8B-Instruct'
     model, tokenizer = load_model_and_tokenizer(model_name)
 
-    num_chars = 600
-    k = 40
-    use_chat = False   
-    
+    # Configuration
+    k = 80
+    use_chat = False
+    insert = ">>"  # Symbol to insert as line break (try: "\n", " 🔴 ", " ||| ", " <BREAK> ")
+
+    # Mode: "chars" = use fixed num_chars, "newlines" = compute num_chars from k * num_newlines
+    mode = "newlines"  # "chars" or "newlines"
+    num_chars = 600  # used when mode="chars"
+    num_newlines = 12  # used when mode="newlines"
+
+    # System prompt (same one used in create_chat_completion_prompt)
+    system_prompt = 'You must continue the story with the same style and tone as the user message.\n\n'
+
+    # Compute effective num_chars based on mode
+    if mode == "newlines":
+        effective_num_chars = k * num_newlines
+    else:  # mode == "chars"
+        effective_num_chars = num_chars
+
     # Process story data
     data = strip_newlines(story)
-    data_split = make_splits(data, num_chars=num_chars)
+    data_split = make_splits(data, num_chars=effective_num_chars)
 
-    for i, line in enumerate(data_split):
-        text, indv_lines = add_newlines(line, k=k)
-        print(text)
+    print(f"Tokenization of insert symbol: {tokenizer.encode(insert, add_special_tokens=False)}")
+
+    for i, chunk in enumerate(data_split):
+        text, indv_lines = add_newlines(chunk, k=k, insert=insert)
+
+        # Print formatted text (with newlines after insert for visibility + char/token counts)
+        print("INPUT TEXT:")
+        input_lines = text.split(insert)
+        max_len = max(len(line) for line in input_lines) + len(insert)
+        for line in input_lines:
+            char_count = len(line)
+            token_count = len(tokenizer.encode(line, add_special_tokens=False))
+            if insert == "\n":
+                print(f"{line:<{max_len}} | {char_count:>3} ({token_count})")
+            else:
+                display_line = line + insert
+                print(f"{display_line:<{max_len}} | {char_count:>3} ({token_count})")
         print('-' * 100)
 
         # Prepare input based on use_chat flag
         if use_chat:
-            prompt = create_chat_completion_prompt(tokenizer, text)
+            prompt = create_chat_completion_prompt(text)
         else:
-            prompt = text
+            prompt = system_prompt + text
 
-        # print(prompt)
+        # Print actual prompt to model (AS-IS, exactly what's sent)
+        print("ACTUAL PROMPT TO MODEL:")
+        prompt_text = prompt if isinstance(prompt, str) else tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        print(prompt_text)
+        print(f"Total chars: {len(prompt_text)}, Total tokens: {len(tokenizer.encode(prompt_text, add_special_tokens=False))}")
+        print('-' * 100)
 
-        a = generate_chat_completion(model, tokenizer, prompt, use_chat=use_chat)
+        a = generate_chat_completion(model, tokenizer, prompt, use_chat=use_chat, print_prompt=False)
 
-        # Count chars before each \n
-        lengths = []
-        for j, line in enumerate(a.split("\n")):
-            if j > 1:  # Skip the first line
-                lengths.append(len(line))
-            print(f"{line:<{k}} | {len(line):>3}")
-        
-        lengths = [length for length in lengths if length != 0]
-        mean_length = np.mean(lengths)
-        std_length = np.std(lengths) if len(lengths) > 1 else 0
-        print(f"Mean length: {mean_length:.2f}, Std: {std_length:.2f}")
-        
+        # Print output (AS-IS)
+        print("OUTPUT (AS-IS):")
+        print(a)
+        print(f"Total chars: {len(a)}, Total tokens: {len(tokenizer.encode(a, add_special_tokens=False))}")
+        print('-' * 100)
+
+        # Print output (split by insert symbol with char/token counts)
+        print("OUTPUT (SPLIT BY INSERT):")
+        output_lines = a.split(insert)
+        if len(output_lines) > 1:
+            for line in output_lines:
+                char_count = len(line)
+                token_count = len(tokenizer.encode(line, add_special_tokens=False))
+                if insert == "\n":
+                    print(f"{line:<{k}} | {char_count:>3} ({token_count})")
+                else:
+                    display_line = line + insert
+                    print(f"{display_line:<{k}} | {char_count:>3} ({token_count})")
+        else:
+            print("(No insert symbols found in output)")
+
         print('=' * 100)
-        break
+        if i > 1:
+            break
 
 

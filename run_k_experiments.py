@@ -123,15 +123,18 @@ def generate_chat_completion(
     max_new_tokens: int = 500,
     temperature: float = 0.7,
     top_p: float = 0.9,
-    greedy: bool = False
+    greedy: bool = False,
+    use_chat: bool = True
 ) -> str:
-    """Generate chat completion from messages."""
-    # Format messages into a prompt using the tokenizer's chat template
-    formatted_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False,
-    )
+    """Generate chat completion from messages or raw text."""
+    if use_chat:
+        formatted_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        formatted_prompt = messages
 
     # Tokenize
     inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model.device)
@@ -178,7 +181,7 @@ def create_chat_completion_prompt(tokenizer, user_question: str):
     return messages
 
 
-def run_experiment_for_k(model, tokenizer, data_split, k, output_dir, greedy=False):
+def run_experiment_for_k(model, tokenizer, data_split, k, output_dir, greedy=False, use_chat=True, system_prompt=""):
     """Run experiment for a specific k value."""
     means = []
     stds = []
@@ -199,8 +202,11 @@ def run_experiment_for_k(model, tokenizer, data_split, k, output_dir, greedy=Fal
             f.write('-' * 100 + "\n\n")
             
             # Generate completion
-            mess = create_chat_completion_prompt(tokenizer, text)
-            completion = generate_chat_completion(model, tokenizer, mess, greedy=greedy)
+            if use_chat:
+                prompt = create_chat_completion_prompt(tokenizer, text)
+            else:
+                prompt = system_prompt + text
+            completion = generate_chat_completion(model, tokenizer, prompt, greedy=greedy, use_chat=use_chat)
             
             # Store output
             outputs.append({
@@ -240,10 +246,18 @@ def main():
     # Configuration
     # model_name = 'meta-llama/Llama-3.1-8B-Instruct'
     model_name = 'Qwen/Qwen2.5-7B-Instruct'
-    num_chars = 600
     k_values = range(30, 130, 10)  # 30, 40, 50, ..., 120
     greedy = True
-    
+
+    # Mode: "chars" = use fixed num_chars, "newlines" = compute num_chars from k * num_newlines
+    mode = "chars"  # "chars" or "newlines"
+    num_chars = 600  # used when mode="chars"
+    num_newlines = 12  # used when mode="newlines"
+
+    # Chat mode configuration
+    use_chat = True
+    system_prompt = 'You must continue the story with the same style and tone as the user message.\n\n'
+
     # Create output directory structure based on model name
     model_folder = model_name.replace('/', '-')  # Sanitize model name for filesystem
     if greedy:
@@ -251,23 +265,28 @@ def main():
     else:
         output_base = Path(model_folder) / "outputs"
     output_base.mkdir(exist_ok=True, parents=True)
-    
+
     print("=" * 80)
     print("Starting K-Value Experiments")
     print("=" * 80)
-    print(f"num_chars: {num_chars}")
+    print(f"mode: {mode}")
+    print(f"num_chars: {num_chars}" if mode == "chars" else f"num_newlines: {num_newlines}")
     print(f"k_values: {list(k_values)}")
     print(f"greedy: {greedy}")
     print(f"Output directory: {output_base}")
     print("=" * 80)
-    
+
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(model_name)
-    
-    # Process story data once (same chunks for all k values)
+
+    # Process story data
     data = strip_newlines(story)
-    data_split = make_splits(data, num_chars=num_chars)
-    print(f"\nTotal chunks created: {len(data_split)}")
+
+    # In "chars" mode, create splits once (same chunks for all k values)
+    # In "newlines" mode, splits are created per-k inside the loop
+    if mode == "chars":
+        data_split = make_splits(data, num_chars=num_chars)
+        print(f"\nTotal chunks created: {len(data_split)}")
     print("=" * 80)
     
     # Separate dictionaries for outputs and statistics
@@ -276,12 +295,17 @@ def main():
     
     # Run experiments for each k value
     for k in tqdm(k_values, desc="Overall Progress"):
+        # In "newlines" mode, compute effective_num_chars and create splits for this k
+        if mode == "newlines":
+            effective_num_chars = k * num_newlines
+            data_split = make_splits(data, num_chars=effective_num_chars)
+
         # Create subfolder for this k
         k_output_dir = output_base / f"k_{k}"
         k_output_dir.mkdir(exist_ok=True)
-        
+
         # Run experiment
-        means, stds, outputs, all_lens = run_experiment_for_k(model, tokenizer, data_split, k, k_output_dir, greedy=greedy)
+        means, stds, outputs, all_lens = run_experiment_for_k(model, tokenizer, data_split, k, k_output_dir, greedy=greedy, use_chat=use_chat, system_prompt=system_prompt)
         
         # Store outputs separately
         outputs_dict[str(k)] = outputs
